@@ -1,0 +1,93 @@
+name: GodMode Recon
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target domain (in-scope only)'
+        required: true
+        type: string
+      modes:
+        description: 'Comma-separated phases'
+        default: 'subdomain,urls,bruteforce,recon,deobfuscate,grep,ai,chains,report'
+        type: string
+
+jobs:
+  godmode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install Go recon tools
+        run: |
+          go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+          go install github.com/tomnomnom/assetfinder@latest
+          go install github.com/projectdiscovery/httpx/cmd/httpx@latest
+          go install github.com/lc/gau/v2/cmd/gau@latest
+          go install github.com/projectdiscovery/katana/cmd/katana@latest
+          go install github.com/tomnomnom/waybackurls@latest
+          go install github.com/OJ/gobuster/v3@latest
+          go install github.com/ffuf/ffuf/v2@latest
+          go install github.com/owasp-amass/amass/v4/...@master || true
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+
+      - name: Install Python tools
+        run: |
+          pip install -q requests urllib3 aiohttp colorama jsbeautifier rich
+          git clone --depth 1 https://github.com/sqlmapproject/sqlmap.git tools/src/sqlmap
+          git clone --depth 1 https://github.com/s0md3v/XSStrike.git tools/src/XSStrike
+          git clone --depth 1 https://github.com/defparam/smuggler.git tools/src/smuggler
+          git clone --depth 1 https://github.com/ticarpi/jwt_tool.git tools/src/jwt_tool
+          git clone --depth 1 https://github.com/commixproject/commix.git tools/src/commix
+          pip install -q -r tools/src/XSStrike/requirements.txt || true
+          pip install -q -r tools/src/jwt_tool/requirements.txt || true
+
+      - name: Copy Go bins to tools/bin
+        run: |
+          mkdir -p tools/bin
+          for bin in subfinder assetfinder httpx gau katana waybackurls gobuster ffuf amass; do
+            cp "$HOME/go/bin/$bin" tools/bin/ 2>/dev/null || true
+          done
+
+      - name: Download wordlists
+        run: |
+          mkdir -p wordlists
+          wget -q -O wordlists/dirsearch.txt https://raw.githubusercontent.com/maurosoria/dirsearch/master/db/dirsearch.txt
+          wget -q -O wordlists/subdomains.txt https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt
+          wget -q -O wordlists/params.txt https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/burp-parameter-names.txt
+          cp wordlists/subdomains.txt wordlists/vhosts.txt
+
+      - name: Run GodMode
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
+          GROK_API_KEY:      ${{ secrets.GROK_API_KEY }}
+          SHODAN_API_KEY:    ${{ secrets.SHODAN_API_KEY }}
+          ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
+        run: |
+          python3 orchestrator.py \
+            -t "${{ github.event.inputs.target }}" \
+            --modes "${{ github.event.inputs.modes }}" \
+            --no-confirm --no-active \
+            -o output
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: godmode-${{ github.event.inputs.target }}-${{ github.run_id }}
+          path: output/
+          retention-days: 30
